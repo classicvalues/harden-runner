@@ -69008,7 +69008,10 @@ function addSummary() {
             const insights_url = `${web_url}/github/${process.env["GITHUB_REPOSITORY"]}/actions/runs/${process.env["GITHUB_RUN_ID"]}`;
             yield core.summary
                 .addSeparator()
-                .addImage("https://github.com/step-security/harden-runner/raw/main/images/banner.png", "StepSecurity Harden-Runner", { width: "200" })
+                .addRaw(`<p><picture>
+          <source media="(prefers-color-scheme: light)" srcset="https://github.com/step-security/harden-runner/raw/main/images/banner.png" width="200">
+          <img alt="Dark Banner" src="https://github.com/step-security/harden-runner/raw/main/images/banner-dark.png" width="200">
+        </picture></p>`, true)
                 .addLink("View security insights and recommended policy", insights_url)
                 .addSeparator()
                 .write();
@@ -69033,7 +69036,7 @@ function verifyChecksum(downloadPath) {
     const checksum = external_crypto_.createHash("sha256")
         .update(fileBuffer)
         .digest("hex"); // checksum of downloaded file
-    const expectedChecksum = "10fd5587cfeba6aac4125be78ee32f60d5e780de10929f454525670c4c16935d"; // checksum for v0.12.2
+    const expectedChecksum = "a1e79e4d7323a63a845c446b9a964a772b0ab7dff9fc94f8a1d10e901f2acde1"; // checksum for v0.13.2
     if (checksum !== expectedChecksum) {
         lib_core.setFailed(`Checksum verification failed, expected ${expectedChecksum} instead got ${checksum}`);
     }
@@ -69094,6 +69097,72 @@ function isValidEvent() {
     return RefKey in process.env && Boolean(process.env[RefKey]);
 }
 
+;// CONCATENATED MODULE: ./src/policy-utils.ts
+var policy_utils_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+
+const API_ENDPOINT = "https://agent.api.stepsecurity.io/v1";
+function fetchPolicy(owner, policyName, idToken) {
+    return policy_utils_awaiter(this, void 0, void 0, function* () {
+        if (idToken === "") {
+            throw new Error("[PolicyFetch]: id-token in empty");
+        }
+        let policyEndpoint = `${API_ENDPOINT}/github/${owner}/actions/policies/${policyName}`;
+        let httpClient = new lib.HttpClient();
+        let headers = {};
+        headers["Authorization"] = `Bearer ${idToken}`;
+        headers["Source"] = "github-actions";
+        let response = undefined;
+        let err = undefined;
+        let retry = 0;
+        while (retry < 3) {
+            try {
+                console.log(`Attempt: ${retry + 1}`);
+                response = yield httpClient.getJson(policyEndpoint, headers);
+                break;
+            }
+            catch (e) {
+                err = e;
+            }
+            retry += 1;
+            yield sleep(1000);
+        }
+        if (response === undefined && err !== undefined) {
+            throw new Error(`[Policy Fetch] ${err}`);
+        }
+        else {
+            return response.result;
+        }
+    });
+}
+function mergeConfigs(localConfig, remoteConfig) {
+    if (localConfig.allowed_endpoints === "") {
+        localConfig.allowed_endpoints = remoteConfig.allowed_endpoints.join(" ");
+    }
+    if (remoteConfig.disable_sudo !== undefined) {
+        localConfig.disable_sudo = remoteConfig.disable_sudo;
+    }
+    if (remoteConfig.disable_file_monitoring !== undefined) {
+        localConfig.disable_file_monitoring = remoteConfig.disable_file_monitoring;
+    }
+    if (remoteConfig.egress_policy !== undefined) {
+        localConfig.egress_policy = remoteConfig.egress_policy;
+    }
+    return localConfig;
+}
+function sleep(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
 // EXTERNAL MODULE: ./node_modules/@actions/cache/lib/internal/cacheHttpClient.js
 var cacheHttpClient = __nccwpck_require__(8245);
 // EXTERNAL MODULE: ./node_modules/@actions/cache/lib/internal/cacheUtils.js
@@ -69123,6 +69192,7 @@ var setup_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _ar
 
 
 
+
 (() => setup_awaiter(void 0, void 0, void 0, function* () {
     try {
         if (process.platform !== "linux") {
@@ -69137,7 +69207,7 @@ var setup_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _ar
         var env = "agent";
         var api_url = `https://${env}.api.stepsecurity.io/v1`;
         var web_url = "https://app.stepsecurity.io";
-        const confg = {
+        let confg = {
             repo: process.env["GITHUB_REPOSITORY"],
             run_id: process.env["GITHUB_RUN_ID"],
             correlation_id: correlation_id,
@@ -69148,8 +69218,24 @@ var setup_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _ar
             disable_telemetry: lib_core.getBooleanInput("disable-telemetry"),
             disable_sudo: lib_core.getBooleanInput("disable-sudo"),
             disable_file_monitoring: lib_core.getBooleanInput("disable-file-monitoring"),
-            private: github.context.payload.repository.private,
         };
+        let policyName = lib_core.getInput("policy");
+        if (policyName !== "") {
+            console.log(`Fetching policy from API with name: ${policyName}`);
+            try {
+                let idToken = yield lib_core.getIDToken();
+                let result = yield fetchPolicy(github.context.repo.owner, policyName, idToken);
+                confg = mergeConfigs(confg, result);
+            }
+            catch (err) {
+                lib_core.info(`[!] ${err}`);
+                lib_core.setFailed(err);
+            }
+        }
+        external_fs_.appendFileSync(process.env.GITHUB_STATE, `disableSudo=${confg.disable_sudo}${external_os_.EOL}`, {
+            encoding: "utf8",
+        });
+        lib_core.info(`[!] Current Configuration: \n${JSON.stringify(confg)}\n`);
         if (confg.egress_policy !== "audit" && confg.egress_policy !== "block") {
             lib_core.setFailed("egress-policy must be either audit or block");
         }
@@ -69202,7 +69288,7 @@ var setup_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _ar
         // Note: to avoid github rate limiting
         let token = lib_core.getInput("token");
         let auth = `token ${token}`;
-        const downloadPath = yield tool_cache.downloadTool("https://github.com/step-security/agent/releases/download/v0.12.2/agent_0.12.2_linux_amd64.tar.gz", undefined, auth);
+        const downloadPath = yield tool_cache.downloadTool("https://github.com/step-security/agent/releases/download/v0.13.2/agent_0.13.2_linux_amd64.tar.gz", undefined, auth);
         verifyChecksum(downloadPath); // NOTE: verifying agent's checksum, before extracting
         const extractPath = yield tool_cache.extractTar(downloadPath);
         if (!confg.disable_telemetry || confg.egress_policy === "audit") {
@@ -69236,7 +69322,7 @@ var setup_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _ar
                     }
                     break;
                 }
-                yield sleep(300);
+                yield setup_sleep(300);
             } // The file *does* exist
             else {
                 // Read the file
@@ -69250,7 +69336,7 @@ var setup_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _ar
         lib_core.setFailed(error.message);
     }
 }))();
-function sleep(ms) {
+function setup_sleep(ms) {
     return new Promise((resolve) => {
         setTimeout(resolve, ms);
     });
